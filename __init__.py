@@ -24,6 +24,7 @@ BLENDQUERY_INSTANCE_MARKER = "is_blendquery_instance"
 BLENDQUERY_INSTANCE_ID_KEY = "blendquery_instance_id"
 BLENDQUERY_OUTPUT_COLLECTION_KEY = "blendquery_output_collection"
 
+# TODO: Find a better way to store/reset
 are_dependencies_installed = False
 
 
@@ -57,19 +58,24 @@ class BlendQueryAddInstanceOperator(bpy.types.Operator):
         instance_name = "BlendQuery"
         output_collection_name = f"{instance_name}__bq"
 
+        # Create owned output collection
         output_collection = bpy.data.collections.new(output_collection_name)
         scene_collection.children.link(output_collection)
 
+        # Create instance empty
         instance_object = bpy.data.objects.new(instance_name, None)
         instance_object.empty_display_type = "PLAIN_AXES"
         instance_object.empty_display_size = 0.5
 
+        # Mark instance / bind collection
         instance_object[BLENDQUERY_INSTANCE_MARKER] = True
         instance_object[BLENDQUERY_INSTANCE_ID_KEY] = str(uuid.uuid4())
         instance_object[BLENDQUERY_OUTPUT_COLLECTION_KEY] = output_collection.name
 
+        # Link instance into owned collection
         output_collection.objects.link(instance_object)
 
+        # Select new instance
         for obj in context.selected_objects:
             obj.select_set(False)
 
@@ -97,21 +103,11 @@ class BlendQueryDeleteSubtreeOperator(bpy.types.Operator):
 
         try:
             blendquery_module = get_blendquery_module()
-            blendquery_module.delete_blendquery_instance_from_object(obj)
+            blendquery_module.delete_object_subtree(obj)
         except Exception as exc:
             self.report({"WARNING"}, f"Failed to delete subtree: {exc}")
             return {"CANCELLED"}
 
-        return {"FINISHED"}
-
-
-class BlendQueryZZZTestOperator(bpy.types.Operator):
-    bl_idname = "blendquery.zzz_test"
-    bl_label = "ZZZ BlendQuery Test"
-
-    def execute(self, context):
-        self.report({"INFO"}, "ZZZ BlendQuery Test ran")
-        print("ZZZ BlendQuery Test ran")
         return {"FINISHED"}
 
 
@@ -125,9 +121,7 @@ def register():
     bpy.utils.register_class(BlendQueryWindowPropertyGroup)
     bpy.utils.register_class(BlendQueryAddInstanceOperator)
     bpy.utils.register_class(BlendQueryDeleteSubtreeOperator)
-    bpy.utils.register_class(BlendQueryZZZTestOperator)
     bpy.types.VIEW3D_MT_add.append(menu_add_blendquery)
-    print("REGISTERED ZZZ TEST OP")
 
     bpy.types.WindowManager.blendquery = bpy.props.PointerProperty(
         type=BlendQueryWindowPropertyGroup
@@ -157,7 +151,6 @@ def unregister():
     bpy.utils.unregister_class(BlendQueryImportDependenciesOperator)
     bpy.utils.unregister_class(BlendQueryPropertyGroup)
     bpy.utils.unregister_class(ObjectPropertyGroup)
-    bpy.utils.unregister_class(BlendQueryZZZTestOperator)
     try:
         bpy.types.VIEW3D_MT_add.remove(menu_add_blendquery)
     except Exception:
@@ -182,6 +175,7 @@ def menu_add_blendquery(self, context):
 
 
 def update(_object):
+    # Auto-regeneration intentionally disabled for stability.
     return
 
 
@@ -472,8 +466,6 @@ class BlendQueryPanel(bpy.types.Panel):
             row.operator("blendquery.regenerate", text="Regenerate")
             row = column.row()
             row.operator("blendquery.delete_subtree", text="Delete Subtree")
-            row = column.row()
-            row.operator("blendquery.zzz_test", text="ZZZ Test")
 
     def not_installed(self, layout, context):
         box = layout.box()
