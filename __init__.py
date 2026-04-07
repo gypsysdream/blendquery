@@ -15,11 +15,6 @@ from bpy.app.handlers import persistent
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from setup_venv import setup_venv
-from .blendquery import (
-    regenerate_blendquery_object,
-    delete_blendquery_instance_from_object,
-    BlendQueryBuildException,
-)
 
 venv_dir = setup_venv()
 
@@ -30,6 +25,10 @@ BLENDQUERY_INSTANCE_ID_KEY = "blendquery_instance_id"
 BLENDQUERY_OUTPUT_COLLECTION_KEY = "blendquery_output_collection"
 
 are_dependencies_installed = False
+
+
+def get_blendquery_module():
+    return importlib.import_module(f"{__package__}.blendquery")
 
 
 def statusbar_progress_bar(self, context):
@@ -97,14 +96,22 @@ class BlendQueryDeleteSubtreeOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         try:
-            delete_blendquery_instance_from_object(obj)
-        except BlendQueryBuildException as exc:
-            self.report({"WARNING"}, str(exc))
-            return {"CANCELLED"}
+            blendquery_module = get_blendquery_module()
+            blendquery_module.delete_blendquery_instance_from_object(obj)
         except Exception as exc:
             self.report({"WARNING"}, f"Failed to delete subtree: {exc}")
             return {"CANCELLED"}
 
+        return {"FINISHED"}
+
+
+class BlendQueryZZZTestOperator(bpy.types.Operator):
+    bl_idname = "blendquery.zzz_test"
+    bl_label = "ZZZ BlendQuery Test"
+
+    def execute(self, context):
+        self.report({"INFO"}, "ZZZ BlendQuery Test ran")
+        print("ZZZ BlendQuery Test ran")
         return {"FINISHED"}
 
 
@@ -118,7 +125,9 @@ def register():
     bpy.utils.register_class(BlendQueryWindowPropertyGroup)
     bpy.utils.register_class(BlendQueryAddInstanceOperator)
     bpy.utils.register_class(BlendQueryDeleteSubtreeOperator)
+    bpy.utils.register_class(BlendQueryZZZTestOperator)
     bpy.types.VIEW3D_MT_add.append(menu_add_blendquery)
+    print("REGISTERED ZZZ TEST OP")
 
     bpy.types.WindowManager.blendquery = bpy.props.PointerProperty(
         type=BlendQueryWindowPropertyGroup
@@ -148,6 +157,7 @@ def unregister():
     bpy.utils.unregister_class(BlendQueryImportDependenciesOperator)
     bpy.utils.unregister_class(BlendQueryPropertyGroup)
     bpy.utils.unregister_class(ObjectPropertyGroup)
+    bpy.utils.unregister_class(BlendQueryZZZTestOperator)
     try:
         bpy.types.VIEW3D_MT_add.remove(menu_add_blendquery)
     except Exception:
@@ -359,7 +369,8 @@ class BlendQueryRegenerateOperator(bpy.types.Operator):
         if isinstance(response, Exception):
             self.report_exception(response)
         else:
-            regenerate_blendquery_object(
+            blendquery_module = get_blendquery_module()
+            blendquery_module.regenerate_blendquery_object(
                 response,
                 self.object,
                 self.object.blendquery.object_pointers,
@@ -461,6 +472,8 @@ class BlendQueryPanel(bpy.types.Panel):
             row.operator("blendquery.regenerate", text="Regenerate")
             row = column.row()
             row.operator("blendquery.delete_subtree", text="Delete Subtree")
+            row = column.row()
+            row.operator("blendquery.zzz_test", text="ZZZ Test")
 
     def not_installed(self, layout, context):
         box = layout.box()
