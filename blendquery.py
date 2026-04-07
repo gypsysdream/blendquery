@@ -58,20 +58,21 @@ def get_blendquery_output_collection(
     if instance_root is None:
         raise BlendQueryBuildException("BlendQuery instance root is missing.")
 
-    collection_name = instance_root.get(BLENDQUERY_OUTPUT_COLLECTION_KEY, None)
-    if not collection_name:
-        raise BlendQueryBuildException(
-            f"BlendQuery instance '{instance_root.name}' is missing its output collection binding."
-        )
+    stored_name = instance_root.get(BLENDQUERY_OUTPUT_COLLECTION_KEY, None)
+    if stored_name:
+        output_collection = bpy.data.collections.get(stored_name)
+        if output_collection is not None:
+            return output_collection
 
-    output_collection = bpy.data.collections.get(collection_name)
-    if output_collection is None:
-        raise BlendQueryBuildException(
-            f"BlendQuery output collection '{collection_name}' was not found."
-        )
+    # Fallback: reacquire from current linked collections
+    for collection in instance_root.users_collection:
+        if collection is not None:
+            instance_root[BLENDQUERY_OUTPUT_COLLECTION_KEY] = collection.name
+            return collection
 
-    return output_collection
-
+    raise BlendQueryBuildException(
+        f"BlendQuery instance '{instance_root.name}' is not linked to any live output collection."
+    )
 
 def regenerate_blendquery_object(
     parametric_objects: List[ParametricObject],

@@ -9,6 +9,7 @@ import re
 import sys
 import traceback
 import importlib
+from pathlib import Path
 
 import bpy
 from bpy.app.handlers import persistent
@@ -23,6 +24,11 @@ build123d = None
 BLENDQUERY_INSTANCE_MARKER = "is_blendquery_instance"
 BLENDQUERY_INSTANCE_ID_KEY = "blendquery_instance_id"
 BLENDQUERY_OUTPUT_COLLECTION_KEY = "blendquery_output_collection"
+
+SOURCE_MODE_ITEMS = [
+    ("MASOCHIST", "Masochist Mode", "Run the in-Blender text datablock"),
+    ("SADIST", "Sadist Mode", "Run the physical file from disk"),
+]
 
 # TODO: Find a better way to store/reset
 are_dependencies_installed = False
@@ -111,6 +117,37 @@ class BlendQueryDeleteSubtreeOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BlendQueryPickScriptFileOperator(bpy.types.Operator):
+    bl_idname = "blendquery.pick_script_file"
+    bl_label = "Pick BlendQuery Script File"
+    bl_description = "Choose a physical Python file for Sadist Mode"
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def invoke(self, context, event):
+        obj = context.active_object
+        if obj is not None:
+            current_path = obj.blendquery.script_path
+            if current_path:
+                self.filepath = bpy.path.abspath(current_path)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None:
+            self.report({"WARNING"}, "No active object selected.")
+            return {"CANCELLED"}
+
+        obj.blendquery.script_path = self.filepath
+        self.report({"INFO"}, f"Set script path to: {self.filepath}")
+        return {"FINISHED"}
+
+
 def register():
     bpy.utils.register_class(ObjectPropertyGroup)
     bpy.utils.register_class(BlendQueryPropertyGroup)
@@ -121,6 +158,7 @@ def register():
     bpy.utils.register_class(BlendQueryWindowPropertyGroup)
     bpy.utils.register_class(BlendQueryAddInstanceOperator)
     bpy.utils.register_class(BlendQueryDeleteSubtreeOperator)
+    bpy.utils.register_class(BlendQueryPickScriptFileOperator)
     bpy.types.VIEW3D_MT_add.append(menu_add_blendquery)
 
     bpy.types.WindowManager.blendquery = bpy.props.PointerProperty(
@@ -155,6 +193,7 @@ def unregister():
         bpy.types.VIEW3D_MT_add.remove(menu_add_blendquery)
     except Exception:
         pass
+    bpy.utils.unregister_class(BlendQueryPickScriptFileOperator)
     bpy.utils.unregister_class(BlendQueryDeleteSubtreeOperator)
     bpy.utils.unregister_class(BlendQueryAddInstanceOperator)
 
@@ -187,9 +226,22 @@ class BlendQueryPropertyGroup(bpy.types.PropertyGroup):
     def _update(self, _context):
         update(self.id_data)
 
+    source_mode: bpy.props.EnumProperty(
+        name="Source Mode",
+        items=SOURCE_MODE_ITEMS,
+        default="MASOCHIST",
+        update=_update,
+    )
+
     script: bpy.props.PointerProperty(
         name="Script",
         type=bpy.types.Text,
+        update=_update,
+    )
+
+    script_path: bpy.props.StringProperty(
+        name="Script Path",
+        subtype="FILE_PATH",
         update=_update,
     )
 
@@ -336,12 +388,50 @@ class BlendQueryRegenerateOperator(bpy.types.Operator):
     def execute(self, context):
         self.object = context.active_object
 
-        if not self.object or not self.object.blendquery.script:
-            self.report({"WARNING"}, "No BlendQuery script assigned.")
+        if not self.object:
+            self.report({"WARNING"}, "No active object selected.")
+            return {"CANCELLED"}
+
+        source_mode = self.object.blendquery.source_mode
+
+        if source_mode == "MASOCHIST":
+            if not self.object.blendquery.script:
+                self.report({"WARNING"}, "No BlendQuery text script assigned.")
+                return {"CANCELLED"}
+
+            script_text = self.object.blendquery.script.as_string()
+
+        elif source_mode == "SADIST":
+            script_path = self.object.blendquery.script_path
+            if not script_path:
+                self.report({"WARNING"}, "No BlendQuery script path assigned.")
+                return {"CANCELLED"}
+
+            resolved_path = Path(bpy.path.abspath(script_path))
+            if not resolved_path.exists():
+                self.report(
+                    {"WARNING"},
+                    f"BlendQuery script file was not found: {resolved_path}",
+                )
+                return {"CANCELLED"}
+
+            try:
+                script_text = resolved_path.read_text(encoding="utf-8")
+            except Exception as exc:
+                self.report(
+                    {"WARNING"},
+                    f"Failed to read BlendQuery script file: {exc}",
+                )
+                return {"CANCELLED"}
+
+            print("BLENDQUERY SADIST MODE PATH:", str(resolved_path))
+
+        else:
+            self.report({"WARNING"}, f"Unknown source mode: {source_mode}")
             return {"CANCELLED"}
 
         payload = {
-            "script": self.object.blendquery.script.as_string(),
+            "script": script_text,
             "tolerance": self.object.blendquery.tessellation_tolerance,
             "angular_tolerance": self.object.blendquery.tessellation_angular_tolerance,
         }
@@ -458,12 +548,23 @@ class BlendQueryPanel(bpy.types.Panel):
         if context.active_object:
             obj = context.active_object
             column = layout.column()
-            column.prop(obj.blendquery, "script")
+
+            column.prop(obj.blendquery, "source_mode")
+
+            if obj.blendquery.source_mode == "MASOCHIST":
+                column.prop(obj.blendquery, "script")
+            elif obj.blendquery.source_mode == "SADIST":
+                row = column.row(align=True)
+                row.prop(obj.blendquery, "script_path", text="Script Path")
+                row.operator("blendquery.pick_script_file", text="", icon="FILE_FOLDER")
+
             column.prop(obj.blendquery, "tessellation_tolerance")
             column.prop(obj.blendquery, "tessellation_angular_tolerance")
             column.separator(factor=0.5)
+
             row = column.row()
             row.operator("blendquery.regenerate", text="Regenerate")
+
             row = column.row()
             row.operator("blendquery.delete_subtree", text="Delete Subtree")
 
