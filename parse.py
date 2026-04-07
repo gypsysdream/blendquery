@@ -32,43 +32,55 @@ def main():
             }
             exec(script, globals, locals)
 
-            return [
-                parse_parametric_object(value, name, None)
-                for name, value in locals.items()
-                if isinstance(value, ParametricObject) and not name.startswith("_")
-            ]
+            seen_ids = set()
+            parsed_objects = []
+
+            for name, value in locals.items():
+                if name.startswith("_"):
+                    continue
+                if not isinstance(value, ParametricObject):
+                    continue
+
+                instance_id = id(value)
+                if instance_id in seen_ids:
+                    continue
+
+                seen_ids.add(instance_id)
+                parsed_objects.append(parse_parametric_object(value, name, None))
+
+            return parsed_objects
 
         def parse_parametric_object(
-            object: ParametricObject,
+            obj: ParametricObject,
             name: str,
             material: Union[str, None],
         ) -> ParametricObjectNode:
-            name = object.name if (hasattr(object, "name") and object.name) else name
+            name = obj.name if (hasattr(obj, "name") and obj.name) else name
             material = (
-                object.material if (hasattr(object, "material") and object.material) else material
+                obj.material if (hasattr(obj, "material") and obj.material) else material
             )
 
-            if isinstance(object, cadquery.Assembly):
+            if isinstance(obj, cadquery.Assembly):
                 return ParametricObjectNode(
                     name=name,
                     material=material,
                     children=[
                         parse_parametric_object(child, name, material)
-                        for child in object.shapes + object.children
+                        for child in obj.shapes + obj.children
                     ],
                 )
 
-            if isinstance(object, ParametricShape):
-                shape = object
-            elif isinstance(object, cadquery.Workplane):
-                vals = object.vals()
+            if isinstance(obj, ParametricShape):
+                shape = obj
+            elif isinstance(obj, cadquery.Workplane):
+                vals = obj.vals()
                 if not vals:
                     raise BlendQueryBuildException("Workplane produced no solids.")
                 shape = cadquery.Shape(vals[0].wrapped)
             else:
                 raise BlendQueryBuildException(
                     "Failed to parse parametric object; Unsupported object type ("
-                    + str(type(object))
+                    + str(type(obj))
                     + ")."
                 )
 
