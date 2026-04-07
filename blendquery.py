@@ -3,14 +3,12 @@ from dataclasses import dataclass, field
 
 import bpy
 import cadquery
-import build123d
 
-ParametricShape = Union[cadquery.Shape, build123d.Shape]
+ParametricShape = cadquery.Shape
 ParametricObject = Union[
     ParametricShape,
     cadquery.Workplane,
     cadquery.Assembly,
-    build123d.Builder,
 ]
 
 @dataclass
