@@ -1,6 +1,5 @@
 import sys
 import pickle
-from typing import Union
 
 from interop_types import ParametricObjectNode, BlendQueryBuildException
 
@@ -8,37 +7,58 @@ from interop_types import ParametricObjectNode, BlendQueryBuildException
 def main():
     try:
         from setup_venv import setup_venv
+
         setup_venv()
 
         import cadquery
-
-        ParametricShape = cadquery.Shape
-        ParametricObject = Union[
-            ParametricShape,
-            cadquery.Workplane,
-            cadquery.Assembly,
-        ]
 
         payload = pickle.loads(sys.stdin.buffer.read())
         parametric_script = payload["script"]
         tolerance = payload["tolerance"]
         angular_tolerance = payload["angular_tolerance"]
+        enable_build123d = payload.get("enable_build123d", False)
+
+        build123d = None
+        if enable_build123d:
+            try:
+                import build123d as _build123d
+
+                build123d = _build123d
+            except Exception:
+                build123d = None
+
+        cadquery_types = (
+            cadquery.Shape,
+            cadquery.Workplane,
+            cadquery.Assembly,
+        )
+
+        build123d_shape_types = ()
+        if build123d is not None:
+            build123d_shape_types = (build123d.Shape,)
+
+        parseable_types = cadquery_types + build123d_shape_types
 
         def parse_parametric_script(script: str):
-            locals = {}
-            globals = {
+            locals_dict = {}
+            globals_dict = {
                 "cadquery": cadquery,
                 "cq": cadquery,
             }
-            exec(script, globals, locals)
+
+            if build123d is not None:
+                globals_dict["build123d"] = build123d
+                globals_dict["b3d"] = build123d
+
+            exec(script, globals_dict, locals_dict)
 
             seen_ids = set()
             parsed_objects = []
 
-            for name, value in locals.items():
+            for name, value in locals_dict.items():
                 if name.startswith("_"):
                     continue
-                if not isinstance(value, ParametricObject):
+                if not isinstance(value, parseable_types):
                     continue
 
                 instance_id = id(value)
@@ -50,11 +70,7 @@ def main():
 
             return parsed_objects
 
-        def parse_parametric_object(
-            obj: ParametricObject,
-            name: str,
-            material: Union[str, None],
-        ) -> ParametricObjectNode:
+        def parse_parametric_object(obj, name: str, material):
             name = obj.name if (hasattr(obj, "name") and obj.name) else name
             material = (
                 obj.material if (hasattr(obj, "material") and obj.material) else material
@@ -70,13 +86,23 @@ def main():
                     ],
                 )
 
-            if isinstance(obj, ParametricShape):
+            if isinstance(obj, cadquery.Shape):
                 shape = obj
+
             elif isinstance(obj, cadquery.Workplane):
                 vals = obj.vals()
                 if not vals:
                     raise BlendQueryBuildException("Workplane produced no solids.")
                 shape = cadquery.Shape(vals[0].wrapped)
+
+            elif build123d is not None and isinstance(obj, build123d.Shape):
+                wrapped = getattr(obj, "wrapped", None)
+                if wrapped is None:
+                    raise BlendQueryBuildException(
+                        "build123d shape did not expose a wrapped OCC shape."
+                    )
+                shape = cadquery.Shape(wrapped)
+
             else:
                 raise BlendQueryBuildException(
                     "Failed to parse parametric object; Unsupported object type ("

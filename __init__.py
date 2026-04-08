@@ -19,8 +19,14 @@ from setup_venv import setup_venv
 
 venv_dir = setup_venv()
 
+numpy = None
 cadquery = None
 build123d = None
+
+numpy_version = None
+cadquery_version = None
+build123d_version = None
+
 BLENDQUERY_INSTANCE_MARKER = "is_blendquery_instance"
 BLENDQUERY_INSTANCE_ID_KEY = "blendquery_instance_id"
 BLENDQUERY_OUTPUT_COLLECTION_KEY = "blendquery_output_collection"
@@ -32,11 +38,124 @@ SOURCE_MODE_ITEMS = [
 
 # TODO: Find a better way to store/reset
 are_dependencies_installed = False
+dependency_status_message = "Dependency status has not been checked yet."
 
+dependency_status_level = "INFO"
+
+
+def set_dependency_status(message: str, level: str = "INFO"):
+    global dependency_status_message, dependency_status_level
+    dependency_status_message = message
+    dependency_status_level = level
 
 def get_blendquery_module():
     return importlib.import_module(f"{__package__}.blendquery")
 
+
+def get_addon_preferences(context=None):
+    if context is None:
+        context = bpy.context
+
+    addons = context.preferences.addons
+    addon = addons.get(__package__)
+    if addon is None:
+        return None
+    return addon.preferences
+
+
+def is_build123d_enabled(context=None):
+    preferences = get_addon_preferences(context)
+    if preferences is None:
+        return False
+    return preferences.enable_build123d
+
+def get_module_version(module):
+    if module is None:
+        return None
+
+    version = getattr(module, "__version__", None)
+    if version:
+        return str(version)
+
+    try:
+        from importlib.metadata import version as dist_version
+        package_name = getattr(module, "__name__", None)
+        if package_name:
+            return dist_version(package_name)
+    except Exception:
+        pass
+
+    return "unknown"
+
+def set_dependency_versions(numpy_ver=None, cadquery_ver=None, build123d_ver=None):
+    global numpy_version, cadquery_version, build123d_version
+    numpy_version = numpy_ver
+    cadquery_version = cadquery_ver
+    build123d_version = build123d_ver
+
+
+def probe_venv_dependencies(enable_build123d: bool):
+    import subprocess
+    import json
+
+    python_executable = os.path.join(
+        venv_dir,
+        "Scripts" if os.name == "nt" else "bin",
+        "python.exe" if os.name == "nt" else "python",
+    )
+    probe_script = f"""
+import json
+
+result = {{}}
+
+try:
+    import numpy
+    result["numpy_ok"] = True
+    result["numpy_version"] = getattr(numpy, "__version__", "unknown")
+except Exception as exc:
+    result["numpy_ok"] = False
+    result["numpy_error"] = str(exc)
+
+try:
+    import cadquery
+    result["cadquery_ok"] = True
+    result["cadquery_version"] = getattr(cadquery, "__version__", "unknown")
+except Exception as exc:
+    result["cadquery_ok"] = False
+    result["cadquery_error"] = str(exc)
+
+enable_build123d = {repr(enable_build123d)}
+if enable_build123d:
+    try:
+        import build123d
+        result["build123d_ok"] = True
+        result["build123d_version"] = getattr(build123d, "__version__", "unknown")
+    except Exception as exc:
+        result["build123d_ok"] = False
+        result["build123d_error"] = str(exc)
+else:
+    result["build123d_ok"] = False
+    result["build123d_disabled"] = True
+
+print(json.dumps(result))
+"""
+
+    completed = subprocess.run(
+        [python_executable, "-c", probe_script],
+        capture_output=True,
+        text=True,
+    )
+
+    if completed.returncode != 0:
+        raise RuntimeError(
+            completed.stderr.strip() or "Dependency probe subprocess failed."
+        )
+
+    stdout = completed.stdout.strip()
+    if not stdout:
+        raise RuntimeError("Dependency probe subprocess returned no output.")
+
+    return json.loads(stdout)
 
 def statusbar_progress_bar(self, context):
     if bpy.context.window_manager.blendquery.is_regenerating:
@@ -49,6 +168,56 @@ def statusbar_progress_bar(self, context):
         )
         row.scale_x = 4
 
+
+class BlendQueryAddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    enable_build123d: bpy.props.BoolProperty(
+        name="Enable build123d backend",
+        description="Allow BlendQuery to import and use build123d when available",
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        column = layout.column(align=True)
+
+        column.label(text="Optional Backends")
+        column.prop(self, "enable_build123d")
+
+        status_box = layout.box()
+        status_box.label(text="Dependency Status")
+
+        resolved_cadquery_version = cadquery_version
+        resolved_build123d_version = build123d_version
+        resolved_numpy_version = numpy_version
+
+        if cadquery is None:
+            status_box.label(text="CadQuery: not imported")
+        else:
+            status_box.label(text=f"CadQuery: available ({resolved_cadquery_version or 'unknown'})")
+
+        if self.enable_build123d:
+            if build123d is None:
+                status_box.label(text="build123d: enabled but not available")
+            else:
+                status_box.label(
+                    text=f"build123d: enabled and available ({resolved_build123d_version or 'unknown'})"
+                )
+        else:
+            status_box.label(text="build123d: disabled")
+
+        if numpy is None:
+            status_box.label(text="NumPy: not imported")
+        else:
+            status_box.label(text=f"NumPy: available ({resolved_numpy_version or 'unknown'})")
+
+        icon = "ERROR" if dependency_status_level == "ERROR" else "INFO"
+        status_box.separator()
+        status_box.label(text=dependency_status_message, icon=icon)
+
+        layout.separator()
+        layout.operator("blendquery.import_dependencies", icon="FILE_REFRESH")
 
 class BlendQueryAddInstanceOperator(bpy.types.Operator):
     bl_idname = "blendquery.add_instance"
@@ -64,24 +233,19 @@ class BlendQueryAddInstanceOperator(bpy.types.Operator):
         instance_name = "BlendQuery"
         output_collection_name = f"{instance_name}__bq"
 
-        # Create owned output collection
         output_collection = bpy.data.collections.new(output_collection_name)
         scene_collection.children.link(output_collection)
 
-        # Create instance empty
         instance_object = bpy.data.objects.new(instance_name, None)
         instance_object.empty_display_type = "PLAIN_AXES"
         instance_object.empty_display_size = 0.5
 
-        # Mark instance / bind collection
         instance_object[BLENDQUERY_INSTANCE_MARKER] = True
         instance_object[BLENDQUERY_INSTANCE_ID_KEY] = str(uuid.uuid4())
         instance_object[BLENDQUERY_OUTPUT_COLLECTION_KEY] = output_collection.name
 
-        # Link instance into owned collection
         output_collection.objects.link(instance_object)
 
-        # Select new instance
         for obj in context.selected_objects:
             obj.select_set(False)
 
@@ -156,6 +320,7 @@ def register():
     bpy.utils.register_class(BlendQueryRegenerateOperator)
     bpy.utils.register_class(BlendQueryPanel)
     bpy.utils.register_class(BlendQueryWindowPropertyGroup)
+    bpy.utils.register_class(BlendQueryAddonPreferences)
     bpy.utils.register_class(BlendQueryAddInstanceOperator)
     bpy.utils.register_class(BlendQueryDeleteSubtreeOperator)
     bpy.utils.register_class(BlendQueryPickScriptFileOperator)
@@ -196,6 +361,7 @@ def unregister():
     bpy.utils.unregister_class(BlendQueryPickScriptFileOperator)
     bpy.utils.unregister_class(BlendQueryDeleteSubtreeOperator)
     bpy.utils.unregister_class(BlendQueryAddInstanceOperator)
+    bpy.utils.unregister_class(BlendQueryAddonPreferences)
 
 
 @persistent
@@ -291,24 +457,70 @@ class BlendQueryImportDependenciesOperator(bpy.types.Operator):
 
     def execute(self, context):
         global are_dependencies_installed
+        global cadquery, build123d, numpy
+
+        self.import_error = None
+
         try:
-            global cadquery, build123d
+            enable_build123d = is_build123d_enabled(context)
+            result = probe_venv_dependencies(enable_build123d)
 
-            cadquery = importlib.import_module("cadquery")
-            try:
-                build123d = importlib.import_module("build123d")
-            except Exception:
-                build123d = None
+            numpy = object() if result.get("numpy_ok") else None
+            cadquery = object() if result.get("cadquery_ok") else None
+            build123d = object() if result.get("build123d_ok") else None
 
-            are_dependencies_installed = True
+            set_dependency_versions(
+                numpy_ver=result.get("numpy_version"),
+                cadquery_ver=result.get("cadquery_version"),
+                build123d_ver=result.get("build123d_version"),
+            )
+
+            if not result.get("cadquery_ok"):
+                are_dependencies_installed = False
+                set_dependency_status(
+                    "CadQuery import failed in BlendQuery venv: "
+                    + result.get("cadquery_error", "unknown error"),
+                    "ERROR",
+                )
+            elif enable_build123d:
+                if result.get("build123d_ok"):
+                    are_dependencies_installed = True
+                    set_dependency_status(
+                        "CadQuery available. build123d enabled and available.",
+                        "INFO",
+                    )
+                else:
+                    are_dependencies_installed = True
+                    set_dependency_status(
+                        "CadQuery available. build123d is enabled but could not be imported: "
+                        + result.get("build123d_error", "unknown error"),
+                        "ERROR",
+                    )
+            else:
+                are_dependencies_installed = True
+                set_dependency_status(
+                    "CadQuery available. build123d is disabled in add-on preferences.",
+                    "INFO",
+                )
+
         except Exception:
+            numpy = None
+            cadquery = None
+            build123d = None
             are_dependencies_installed = False
+            set_dependency_versions(None, None, None)
+
             exception_trace = traceback.format_exc()
             self.import_error = (
-                f"Failed to import BlendQuery dependencies: {exception_trace}"
+                f"Failed to probe BlendQuery dependencies: {exception_trace}"
+            )
+            set_dependency_status(
+                "Dependency probe failed. See warning/details for traceback.",
+                "ERROR",
             )
 
         context.window_manager.modal_handler_add(self)
+        redraw_ui()
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
@@ -334,8 +546,20 @@ def create_parse_parametric_script_thread(payload):
         env = os.environ.copy()
         env["PATH"] = parent_directory
 
+        python_executable = os.path.join(
+            venv_dir,
+            "Scripts" if os.name == "nt" else "bin",
+            "python.exe" if os.name == "nt" else "python",
+        )
+
+        python_executable = os.path.join(
+            venv_dir,
+            "Scripts" if os.name == "nt" else "bin",
+            "python.exe" if os.name == "nt" else "python",
+        )
+        
         proc = subprocess.Popen(
-            [sys.executable, "parse.py"],
+            [python_executable, "parse.py"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -434,6 +658,7 @@ class BlendQueryRegenerateOperator(bpy.types.Operator):
             "script": script_text,
             "tolerance": self.object.blendquery.tessellation_tolerance,
             "angular_tolerance": self.object.blendquery.tessellation_angular_tolerance,
+            "enable_build123d": is_build123d_enabled(context),
         }
 
         self.thread, self.response = create_parse_parametric_script_thread(payload)
